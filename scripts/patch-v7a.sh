@@ -20,17 +20,19 @@ path, abis = sys.argv[1], sys.argv[2]
 lst = ", ".join(f'"{a}"' for a in abis.split(","))
 s = open(path, encoding="utf-8").read()
 
+# ndk.abiFilters 决定 APK 里最终打包哪些 ABI —— 这一处是正确性的关键。
 s, n_filter = re.subn(r'abiFilters\s*\+=\s*listOf\([^)]*\)',
                       f'abiFilters += listOf({lst})', s)
-s, n_incl   = re.subn(r'include\(\s*"arm64-v8a"\s*,\s*"x86_64"\s*\)',
-                      f'include({lst})', s)
-s, n_univ   = re.subn(r'isUniversalApk\s*=\s*true',
-                      'isUniversalApk = false', s)
+
+# 同时必须关掉 ABI splits: AGP 不允许同一个 ABI 既在 ndk.abiFilters 里
+# 又在 splits.abi 的过滤器里, 否则报 "Conflicting configuration"。
+# 只出一个 ABI 的话本来也不需要 splits, 关掉还更快, 产物就是 app-<type>.apk。
+s, n_split  = re.subn(r'isEnable\s*=\s*!isBuildingBundle',
+                      'isEnable = false', s)
 
 problems = []
 if n_filter != 1: problems.append(f"abiFilters 命中 {n_filter} 次(期望 1)")
-if n_incl   != 1: problems.append(f"splits.include 命中 {n_incl} 次(期望 1)")
-if n_univ   != 1: problems.append(f"isUniversalApk 命中 {n_univ} 次(期望 1)")
+if n_split  != 1: problems.append(f"splits.abi.isEnable 命中 {n_split} 次(期望 1)")
 if problems:
     sys.exit("上游 build.gradle.kts 的补丁锚点已变化, 需要人工更新 patch-v7a.sh:\n  - "
              + "\n  - ".join(problems))
