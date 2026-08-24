@@ -1,0 +1,197 @@
+name: Sync upstream & build v7a
+
+# 设计要点: 这个分支(v7a)只放构建配方, 不放源码。
+# 每次运行都从上游拉一份全新的 checkout, 在 CI 工作区里临时打补丁, 不产生任何 commit。
+# 因此上游无论怎么改 app/build.gradle.kts, 都永远不会有 merge 冲突。
+
+on:
+  schedule:
+    - cron: '30 19 * * *'   # UTC 19:30 = 北京时间 03:30, 错开上游 18:00 的构建
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '上游没有新提交也强制构建'
+        type: boolean
+        default: false
+      build_type:
+        description: '构建类型'
+        type: choice
+        options: [release, debug]
+        default: release
+
+env:
+  UPSTREAM: rikkahub/rikkahub
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.probe.outputs.sha }}
+      short: ${{ steps.probe.outputs.short }}
+      should_build: ${{ steps.probe.outputs.should_build }}
+    steps:
+      - name: 把 fork 的 master 同步成上游镜像
+        # 纯粹为了让仓库里留有与所发布 APK 对应的源码(AGPL 要求)。
+        # 失败不阻断构建 —— 构建本身是直接从上游拉源码的。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/merge-upstream" \
+            -f branch=master >/dev/null 2>&1 \
+            && echo "master 已同步" \
+            || echo "::warning::master 镜像同步失败(不影响本次构建)"
+
+      - name: 取上游 HEAD 并与上次构建比对
+        id: probe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(gh api "repos/$UPSTREAM/commits/master" --jq .sha)
+          echo "sha=$SHA"          >> "$GITHUB_OUTPUT"
+          echo "short=${SHA:0:7}"  >> "$GITHUB_OUTPUT"
+
+          LAST=$(gh release view v7a-latest --repo "${{ github.repository }}" --json body \
+                 --jq .body 2>/dev/null | grep -oE 'upstream-sha: [0-9a-f]{40}' | cut -d' ' -f2 || true)
+
+          echo "上游 HEAD : $SHA"
+          echo "上次构建  : ${LAST:-<无>}"
+
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"; echo "→ 强制构建"
+          elif [ "$SHA" = "$LAST" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"; echo "→ 上游无变化, 跳过"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"; echo "→ 上游有更新, 开始构建"
+          fi
+
+  # ---------------------------------------------------------------------------
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取构建配方(本分支)
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+
+      - name: 取上游源码(纯净, 不做任何 commit)
+        uses: actions/checkout@v4
+        with:
+          repository: rikkahub/rikkahub
+          ref: ${{ needs.check.outputs.sha }}
+          submodules: recursive
+          path: src
+
+      - name: 下载 v7a 原生库
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p natives
+          gh release download natives-v7a --repo "${{ github.repository }}" \
+            --pattern 'natives-v7a.tar.gz' --output natives.tar.gz \
+            || { echo "::error::还没有 natives-v7a 这个 release, 请先手动跑一次 Build v7a natives"; exit 1; }
+          tar xzf natives.tar.gz -C natives
+          ls -l natives/
+
+      - name: 打 v7a 补丁
+        run: tooling/scripts/patch-v7a.sh src natives armeabi-v7a
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: src/web-ui/pnpm-lock.yaml
+
+      - name: 装 web-ui 依赖
+        # gradle 的 buildWebUi 任务只跑 build 不跑 install, 依赖得提前装好
+        working-directory: src/web-ui
+        run: pnpm install --frozen-lockfile
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('src/**/*.gradle*', 'src/**/libs.versions.toml') }}
+          restore-keys: gradle-
+
+      - name: 配置签名
+        id: sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          WANT='${{ inputs.build_type }}'; WANT="${WANT:-release}"
+          if [ -n "$KEYSTORE_BASE64" ] && [ "$WANT" = "release" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$PWD/src/app/release.jks"
+            cat > src/local.properties <<EOP
+          storeFile=$PWD/src/app/release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOP
+            echo "variant=release" >> "$GITHUB_OUTPUT"
+            echo "task=assembleRelease" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$WANT" = "release" ]; then
+              echo "::warning::没有配置 KEYSTORE_BASE64, 回退到 debug 构建(包名带 .debug 后缀, 可与官方版共存)"
+            fi
+            echo "variant=debug" >> "$GITHUB_OUTPUT"
+            echo "task=assembleDebug" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gradle 构建
+        working-directory: src
+        run: |
+          chmod +x gradlew
+          ./gradlew ${{ steps.sign.outputs.task }} --no-daemon --stacktrace
+
+      - name: 校验产物确实是 v7a
+        id: apk
+        run: |
+          APK=$(find src/app/build/outputs/apk -name '*.apk' | head -1)
+          [ -n "$APK" ] || { echo "::error::没找到 APK"; exit 1; }
+          echo "产物: $APK ($(du -h "$APK" | cut -f1))"
+
+          # APK 里必须只有 armeabi-v7a 一种 ABI, 且四个关键 .so 都在
+          ABIS=$(unzip -l "$APK" | grep -oE 'lib/[^/]+/' | sort -u | tr -d ' ')
+          echo "包含 ABI: $ABIS"
+          [ "$ABIS" = "lib/armeabi-v7a/" ] || { echo "::error::ABI 不对: $ABIS"; exit 1; }
+          for so in libsimple.so libmupdf_java.so; do
+            unzip -l "$APK" | grep -q "lib/armeabi-v7a/$so" || { echo "::error::APK 里缺少 $so"; exit 1; }
+          done
+
+          NAME="rikkahub-v7a-${{ needs.check.outputs.short }}-${{ steps.sign.outputs.variant }}.apk"
+          cp "$APK" "$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v7a-latest
+          name: RikkaHub armeabi-v7a (latest)
+          prerelease: true
+          body: |
+            上游 [`${{ needs.check.outputs.short }}`](https://github.com/rikkahub/rikkahub/commit/${{ needs.check.outputs.sha }}) 的 **armeabi-v7a** 自动构建 · ${{ steps.sign.outputs.variant }}
+
+            > ⚠️ 非官方构建，签名与官方版不同，**无法覆盖安装**（需先卸载官方版，注意先导出数据）。
+            > 上游官方只发布 arm64-v8a / x86_64，本仓库仅补充 32 位 ARM 支持，不修改任何功能代码。
+
+            upstream-sha: ${{ needs.check.outputs.sha }}
+          files: ${{ steps.apk.outputs.name }}

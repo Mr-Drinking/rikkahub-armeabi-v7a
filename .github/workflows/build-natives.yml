@@ -1,0 +1,176 @@
+name: Build v7a natives
+
+# 上游把预编译 .so 直接 commit 在仓库里, 但只有 arm64-v8a / x86_64。
+# 这个 workflow 产出对应的 armeabi-v7a 版本, 发布到固定 tag `natives-v7a`,
+# 供日常构建下载。跑一次就够, 只有上游换了原生库版本时才需要重跑。
+
+on:
+  workflow_dispatch:
+    inputs:
+      mupdf_version:
+        description: 'MuPDF fitz AAR 版本 (JNI 符号集需与上游 vendored 版一致)'
+        default: '1.26.12'
+      proot_version:
+        description: 'Termux proot 包版本'
+        default: '5.1.107.92'
+      simple_ref:
+        description: 'wangfenjin/simple 的 git ref'
+        default: 'master'
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # libsimple.so —— SQLite FTS5 中文分词扩展 (cppjieba + 拼音)
+  # 上游官方 release 只发 arm64-v8a / x86_64, 所以必须自己用 NDK 编。
+  # 构建参数照抄 wangfenjin/simple 自己 CI 里的 Android job, 只把 ABI 换成 v7a。
+  # ---------------------------------------------------------------------------
+  simple:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: wangfenjin/simple
+          ref: ${{ inputs.simple_ref }}
+          submodules: true
+
+      - name: Configure
+        run: |
+          test -n "$ANDROID_NDK_LATEST_HOME" || { echo "runner 上没有 NDK"; exit 1; }
+          cmake -S . -B build-v7a \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/out" \
+            -DBUILD_TEST_EXAMPLE=OFF \
+            -DBUILD_SHELL=OFF
+
+      - name: Build
+        run: cmake --build build-v7a --config Release --parallel
+
+      - name: Install
+        run: cmake --install build-v7a --config Release
+
+      - name: Verify ABI
+        run: |
+          test -f out/bin/libsimple.so
+          file out/bin/libsimple.so
+          readelf -h out/bin/libsimple.so | grep -q 'ARM' || { echo "不是 ARM 二进制"; exit 1; }
+          readelf -h out/bin/libsimple.so | grep -q 'ELF32' || { echo "不是 32 位"; exit 1; }
+          # jieba_dict() 是 RikkaHub 在 Room onOpen 里立刻调用的函数, 必须存在
+          readelf -Ws out/bin/libsimple.so | grep -q 'jieba_dict' || { echo "缺少 jieba_dict 符号"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simple
+          path: out/bin/libsimple.so
+
+  # ---------------------------------------------------------------------------
+  # libmupdf_java.so —— PDF 渲染
+  # MuPDF 官方在 maven.ghostscript.com 发布的 AAR 就自带 armeabi-v7a,
+  # 完全不需要从源码编译。版本按 JNI 符号集与上游 vendored 版比对选定。
+  # ---------------------------------------------------------------------------
+  mupdf:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch official AAR and extract armeabi-v7a
+        run: |
+          V='${{ inputs.mupdf_version }}'
+          curl -fsSL -o fitz.aar "https://maven.ghostscript.com/com/artifex/mupdf/fitz/$V/fitz-$V.aar"
+          unzip -o fitz.aar 'jni/armeabi-v7a/libmupdf_java.so'
+          mkdir -p out && mv jni/armeabi-v7a/libmupdf_java.so out/
+
+      - name: Verify ABI
+        run: |
+          file out/libmupdf_java.so
+          readelf -h out/libmupdf_java.so | grep -q 'ELF32' || { echo "不是 32 位"; exit 1; }
+          readelf -Ws out/libmupdf_java.so | grep -q 'Java_com_artifex_mupdf_fitz_Context_initNative' \
+            || { echo "缺少 MuPDF JNI 入口符号"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mupdf
+          path: out/libmupdf_java.so
+
+  # ---------------------------------------------------------------------------
+  # proot 四件套 —— Workspace 的 Linux 沙箱
+  # 上游 arm64 版是自己重编的(talloc/android-shmem 静态链接)。这里换个更省事的路子:
+  # 直接用 Termux 官方 arm 包 + patchelf 改依赖名。
+  # 原因: Android 只会从 APK 里解压 lib*.so 形式的文件, `libtalloc.so.2` 这种
+  # 带版本后缀的名字装不进 nativeLibraryDir, 所以要重命名并同步改 DT_NEEDED/SONAME。
+  # ---------------------------------------------------------------------------
+  proot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install patchelf
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq patchelf
+
+      - name: Download termux arm packages
+        run: |
+          BASE=https://packages.termux.dev/apt/termux-main/pool/main
+          curl -fsSL -o proot.deb  "$BASE/p/proot/proot_${{ inputs.proot_version }}_arm.deb"
+          curl -fsSL -o talloc.deb "$BASE/libt/libtalloc/libtalloc_2.4.3_arm.deb"
+          curl -fsSL -o shmem.deb  "$BASE/liba/libandroid-shmem/libandroid-shmem_0.7_arm.deb"
+          for d in proot talloc shmem; do mkdir -p x_$d && dpkg-deb -x $d.deb x_$d; done
+
+      - name: Assemble and repoint dependencies
+        run: |
+          mkdir -p out
+          P=data/data/com.termux/files/usr
+          cp "x_proot/$P/bin/proot"                  out/libproot_exec.so
+          cp "x_proot/$P/libexec/proot/loader"       out/libproot_loader.so
+          cp "x_talloc/$P/lib/libtalloc.so.2.4.3"    out/libtalloc.so
+          cp "x_shmem/$P/lib/libandroid-shmem.so"    out/libandroid-shmem.so
+          chmod +w out/*.so
+
+          patchelf --set-soname libtalloc.so out/libtalloc.so
+          patchelf --replace-needed libtalloc.so.2 libtalloc.so out/libproot_exec.so
+
+      - name: Verify dependency closure
+        run: |
+          for f in out/*.so; do echo "--- $f"; readelf -h "$f" | grep -E 'Class|Machine'; readelf -d "$f" 2>/dev/null | grep NEEDED || echo "  (静态)"; done
+          # 依赖里不能再残留任何指向 termux 前缀的库名
+          if readelf -d out/libproot_exec.so | grep NEEDED | grep -q 'so\.[0-9]'; then
+            echo "仍有带版本后缀的依赖, Android 装不进去"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proot
+          path: out/*.so
+
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: [simple, mupdf, proot]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dl }
+
+      - name: Collect
+        run: |
+          mkdir -p natives && find dl -name '*.so' -exec cp {} natives/ \;
+          ls -l natives/
+          (cd natives && sha256sum *.so | tee ../SHA256SUMS)
+          tar czf natives-v7a.tar.gz -C natives .
+
+      - name: Publish to fixed tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: natives-v7a
+          name: armeabi-v7a native libraries
+          prerelease: true
+          body: |
+            RikkaHub 上游只提供 arm64-v8a / x86_64 的预编译原生库，这里是对应的 **armeabi-v7a** 版本，供日常构建流水线下载。
+
+            | 库 | 来源 |
+            |---|---|
+            | `libsimple.so` | 由 [wangfenjin/simple](https://github.com/wangfenjin/simple) `${{ inputs.simple_ref }}` 用 NDK 编译 |
+            | `libmupdf_java.so` | 取自 MuPDF 官方 AAR `fitz-${{ inputs.mupdf_version }}` |
+            | `libproot_exec.so` / `libproot_loader.so` | Termux `proot ${{ inputs.proot_version }}` (arm) |
+            | `libtalloc.so` / `libandroid-shmem.so` | Termux 依赖库，已用 patchelf 重命名以适配 Android |
+          files: |
+            natives-v7a.tar.gz
+            SHA256SUMS
