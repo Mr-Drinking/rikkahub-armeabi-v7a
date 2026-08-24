@@ -181,6 +181,17 @@ jobs:
           cp "$APK" "$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
+      - name: 清掉上一版 APK
+        # v7a-latest 是个固定 tag, 不清理的话产物会越堆越多, 用户分不清哪个是最新的。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view v7a-latest --repo "${{ github.repository }}" --json assets             --jq '.assets[].name' 2>/dev/null | while read -r a; do
+              [ -z "$a" ] && continue
+              echo "删除旧产物: $a"
+              gh release delete-asset v7a-latest "$a" --repo "${{ github.repository }}" --yes || true
+            done
+
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
