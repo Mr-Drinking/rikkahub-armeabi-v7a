@@ -97,15 +97,18 @@ jobs:
   # ---------------------------------------------------------------------------
   # proot 四件套 —— Workspace 的 Linux 沙箱
   # 上游 arm64 版是自己重编的(talloc/android-shmem 静态链接)。这里换个更省事的路子:
-  # 直接用 Termux 官方 arm 包 + patchelf 改依赖名。
+  # 直接用 Termux 官方 arm 包, 再把依赖名改掉。
   # 原因: Android 只会从 APK 里解压 lib*.so 形式的文件, `libtalloc.so.2` 这种
   # 带版本后缀的名字装不进 nativeLibraryDir, 所以要重命名并同步改 DT_NEEDED/SONAME。
+  #
+  # 这里刻意不用 patchelf: 它会重排 ELF(新增/移动 PT_LOAD, 实测文件涨了 3.4KB),
+  # 而 Android 的 bionic 链接器对此比 glibc 挑剔。新名字比旧名字短, 所以直接在
+  # .dynstr 里覆写即可 —— 全文件只改 2 个字节, 结构分毫不动。
   # ---------------------------------------------------------------------------
   proot:
     runs-on: ubuntu-latest
     steps:
-      - name: Install patchelf
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq patchelf
+      - uses: actions/checkout@v4
 
       - name: Download termux arm packages
         run: |
@@ -125,15 +128,20 @@ jobs:
           cp "x_shmem/$P/lib/libandroid-shmem.so"    out/libandroid-shmem.so
           chmod +w out/*.so
 
-          patchelf --set-soname libtalloc.so out/libtalloc.so
-          patchelf --replace-needed libtalloc.so.2 libtalloc.so out/libproot_exec.so
+          python3 scripts/rename-elf-dep.py out/libtalloc.so     libtalloc.so.2 libtalloc.so
+          python3 scripts/rename-elf-dep.py out/libproot_exec.so libtalloc.so.2 libtalloc.so
 
       - name: Verify dependency closure
         run: |
           for f in out/*.so; do echo "--- $f"; readelf -h "$f" | grep -E 'Class|Machine'; readelf -d "$f" 2>/dev/null | grep NEEDED || echo "  (静态)"; done
-          # 依赖里不能再残留任何指向 termux 前缀的库名
+          # 依赖里不能再残留带版本后缀的库名(Android 装不进去)
           if readelf -d out/libproot_exec.so | grep NEEDED | grep -q 'so\.[0-9]'; then
-            echo "仍有带版本后缀的依赖, Android 装不进去"; exit 1
+            echo "::error::仍有带版本后缀的依赖"; exit 1
+          fi
+          # 就地改写必须保持文件大小不变, 变了说明动了结构
+          P=data/data/com.termux/files/usr
+          if [ "$(stat -c%s out/libproot_exec.so)" != "$(stat -c%s x_proot/$P/bin/proot)" ]; then
+            echo "::error::libproot_exec.so 大小变了, 说明 ELF 结构被改动"; exit 1
           fi
 
       - uses: actions/upload-artifact@v4
