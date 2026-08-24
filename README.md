@@ -61,17 +61,24 @@
 
 不配也能跑——会自动回退到 debug 构建，包名带 `.debug` 后缀，**可以和官方版共存**，适合先验证 v7a 能不能跑。
 
-想要 release 构建的话，配置这 4 个 secret：
+想要 release 构建，就得有自己的签名密钥。有 JDK 的话直接用 `keytool`：
 
 ```bash
-keytool -genkeypair -v -keystore release.jks -alias rikkahub-v7a \
-  -keyalg RSA -keysize 2048 -validity 10000
+keytool -genkeypair -v -keystore release.jks -alias rikkahub-v7a -keyalg RSA -keysize 2048 -validity 10000
 ```
+
+没装 JDK 也行——[`scripts/make-keystore.py`](scripts/make-keystore.py) 用纯 Python 生成等效的 PKCS#12 密钥库，密码交互式输入，不会进 shell 历史：
+
+```bash
+pip install cryptography && python scripts/make-keystore.py release.jks
+```
+
+然后配置这 4 个 secret：
 
 ```bash
 gh secret set KEYSTORE_BASE64 < <(base64 -w0 release.jks)
+gh secret set KEY_ALIAS <<< 'rikkahub-v7a'
 gh secret set KEYSTORE_PASSWORD
-gh secret set KEY_ALIAS
 gh secret set KEY_PASSWORD
 ```
 
