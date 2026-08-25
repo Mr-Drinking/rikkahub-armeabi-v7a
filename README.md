@@ -67,20 +67,17 @@
 keytool -genkeypair -v -keystore release.jks -alias rikkahub-v7a -keyalg RSA -keysize 2048 -validity 10000
 ```
 
-没装 JDK 也行——[`scripts/make-keystore.py`](scripts/make-keystore.py) 用纯 Python 生成等效的 PKCS#12 密钥库，密码交互式输入，不会进 shell 历史：
+没装 JDK 也行——[`scripts/make-keystore.py`](scripts/make-keystore.py) 用纯 Python 生成等效的 PKCS#12 密钥库，密码交互式输入，不会进 shell 历史。没克隆仓库的话直接取脚本：
 
 ```bash
-pip install cryptography && python scripts/make-keystore.py release.jks
+curl -fsSL -O https://raw.githubusercontent.com/Mr-Drinking/rikkahub-armeabi-v7a/v7a/scripts/make-keystore.py
 ```
-
-然后配置这 4 个 secret：
 
 ```bash
-gh secret set KEYSTORE_BASE64 < <(base64 -w0 release.jks)
-gh secret set KEY_ALIAS <<< 'rikkahub-v7a'
-gh secret set KEYSTORE_PASSWORD
-gh secret set KEY_PASSWORD
+pip install cryptography && python make-keystore.py release.jks
 ```
+
+脚本跑完会按你的系统（PowerShell / bash）打印出对应的 `gh secret set` 命令，照着执行即可。需要这 4 个 secret：`KEYSTORE_BASE64`、`KEY_ALIAS`、`KEYSTORE_PASSWORD`、`KEY_PASSWORD`。
 
 > 🔑 **务必备份 `release.jks`**。弄丢了就再也无法给已安装的 App 升级——只能卸载重装。
 
