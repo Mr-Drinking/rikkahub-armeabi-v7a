@@ -146,6 +146,18 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOP
+            # 首次配签名最容易在这里出错(格式不对/alias 写错/密码不匹配)。
+            # 先用 keytool 验一遍, 给出明确报错, 而不是让 Gradle 抛一堆难懂的东西。
+            if ! keytool -list -keystore "$PWD/src/app/release.jks"                  -storepass "$KEYSTORE_PASSWORD" > /tmp/ks.txt 2>&1; then
+              echo "::error::密钥库打不开 —— 检查 KEYSTORE_BASE64 是否完整, KEYSTORE_PASSWORD 是否正确"
+              sed 's/^/    /' /tmp/ks.txt; exit 1
+            fi
+            echo "密钥库内容:"; sed 's/^/    /' /tmp/ks.txt
+            if ! grep -qi "^$KEY_ALIAS," /tmp/ks.txt; then
+              echo "::error::密钥库里没有名为 '$KEY_ALIAS' 的条目 —— 检查 KEY_ALIAS(见上面列出的实际 alias)"
+              exit 1
+            fi
+
             echo "variant=release" >> "$GITHUB_OUTPUT"
             echo "task=assembleRelease" >> "$GITHUB_OUTPUT"
           else
