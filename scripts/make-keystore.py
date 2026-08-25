@@ -62,23 +62,35 @@ with open(OUT, "wb") as f:
 os.chmod(OUT, 0o600)
 
 REPO = "Mr-Drinking/rikkahub-armeabi-v7a"
+ABS = os.path.abspath(OUT)
 if os.name == "nt":
-    howto = f"""    [Convert]::ToBase64String([IO.File]::ReadAllBytes("{OUT}")) | gh secret set KEYSTORE_BASE64 --repo {REPO}
-    "{ALIAS}" | gh secret set KEY_ALIAS --repo {REPO}
+    # PowerShell 两个坑: .NET 的工作目录未必等于当前位置(所以用绝对路径),
+    # 管道传给原生命令会带换行(所以用 --body 传变量)。
+    howto = f"""    $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes('{ABS}'))
+    gh secret set KEYSTORE_BASE64 --repo {REPO} --body $b64
+    gh secret set KEY_ALIAS --repo {REPO} --body '{ALIAS}'
     gh secret set KEYSTORE_PASSWORD --repo {REPO}     # 交互式粘贴刚才那个密码
-    gh secret set KEY_PASSWORD --repo {REPO}          # 同上(本脚本两者一致)"""
+    gh secret set KEY_PASSWORD --repo {REPO}          # 同上(本脚本两者一致)
+
+验证是否设置成功(应列出 4 条):
+    gh secret list --repo {REPO}"""
 else:
-    howto = f"""    gh secret set KEYSTORE_BASE64 --repo {REPO} < <(base64 -w0 {OUT})
-    gh secret set KEY_ALIAS --repo {REPO} <<< '{ALIAS}'
+    howto = f"""    gh secret set KEYSTORE_BASE64 --repo {REPO} < <(base64 -w0 '{ABS}')
+    gh secret set KEY_ALIAS --repo {REPO} --body '{ALIAS}'
     gh secret set KEYSTORE_PASSWORD --repo {REPO}     # 粘贴刚才那个密码
-    gh secret set KEY_PASSWORD --repo {REPO}          # 同上(本脚本两者一致)"""
+    gh secret set KEY_PASSWORD --repo {REPO}          # 同上(本脚本两者一致)
+
+验证是否设置成功(应列出 4 条):
+    gh secret list --repo {REPO}"""
 
 print(f"""
-已生成 {OUT}  (alias: {ALIAS}, 有效期 {YEARS} 年)
+已生成 {ABS}  (alias: {ALIAS}, 有效期 {YEARS} 年)
 
 接下来把它设成仓库 secret:
 
 {howto}
 
-务必把 {OUT} 和密码备份好 —— 弄丢了就再也无法给已安装的 App 升级。
+!! 务必把密钥库文件本身备份好 —— 光记密码没有用。
+   密码只是用来解开这个文件的; 私钥是随机生成的, 文件丢了任何密码都变不回来,
+   之后就再也无法给已安装的 App 升级, 只能卸载重装(数据全丢)。
 """)

@@ -154,7 +154,8 @@ jobs:
             echo "variant=release-smoke" >> "$GITHUB_OUTPUT"
             echo "task=assembleRelease" >> "$GITHUB_OUTPUT"
           elif [ -n "$KEYSTORE_BASE64" ] && [ "$WANT" = "release" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$PWD/src/app/release.jks"
+            # 容忍 secret 里混进换行/空格(PowerShell 管道很容易带上)
+            printf %s "$KEYSTORE_BASE64" | tr -d "[:space:]" | base64 -d > "$PWD/src/app/release.jks"
             cat > src/local.properties <<EOP
           storeFile=$PWD/src/app/release.jks
           storePassword=$KEYSTORE_PASSWORD
