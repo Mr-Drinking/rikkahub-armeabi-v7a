@@ -61,15 +61,24 @@ with open(OUT, "wb") as f:
     f.write(blob)
 os.chmod(OUT, 0o600)
 
+REPO = "Mr-Drinking/rikkahub-armeabi-v7a"
+if os.name == "nt":
+    howto = f"""    [Convert]::ToBase64String([IO.File]::ReadAllBytes("{OUT}")) | gh secret set KEYSTORE_BASE64 --repo {REPO}
+    "{ALIAS}" | gh secret set KEY_ALIAS --repo {REPO}
+    gh secret set KEYSTORE_PASSWORD --repo {REPO}     # 交互式粘贴刚才那个密码
+    gh secret set KEY_PASSWORD --repo {REPO}          # 同上(本脚本两者一致)"""
+else:
+    howto = f"""    gh secret set KEYSTORE_BASE64 --repo {REPO} < <(base64 -w0 {OUT})
+    gh secret set KEY_ALIAS --repo {REPO} <<< '{ALIAS}'
+    gh secret set KEYSTORE_PASSWORD --repo {REPO}     # 粘贴刚才那个密码
+    gh secret set KEY_PASSWORD --repo {REPO}          # 同上(本脚本两者一致)"""
+
 print(f"""
 已生成 {OUT}  (alias: {ALIAS}, 有效期 {YEARS} 年)
 
 接下来把它设成仓库 secret:
 
-    gh secret set KEYSTORE_BASE64   < <(base64 -w0 {OUT})
-    gh secret set KEY_ALIAS         <<< '{ALIAS}'
-    gh secret set KEYSTORE_PASSWORD      # 粘贴刚才那个密码
-    gh secret set KEY_PASSWORD           # 同上(本脚本两者一致)
+{howto}
 
 务必把 {OUT} 和密码备份好 —— 弄丢了就再也无法给已安装的 App 升级。
 """)
