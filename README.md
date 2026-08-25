@@ -7,7 +7,7 @@
 
 > ⚠️ 非官方构建。签名与官方版不同，**无法覆盖安装**——要装得先卸载官方版（记得先导出数据）。
 
-📦 **[下载最新构建](../../releases/tag/v7a-latest)**
+📦 **[下载最新构建](../../releases/tag/Release)**
 
 ---
 
@@ -53,7 +53,7 @@
 | Workflow | 触发 | 干什么 |
 |---|---|---|
 | [`build-natives.yml`](.github/workflows/build-natives.yml) | 手动 | 产出 4+2 个 v7a `.so`，发到固定 tag `natives-v7a`。**跑一次就够**，只有上游换了原生库版本才需要重跑 |
-| [`sync-build.yml`](.github/workflows/sync-build.yml) | 每天 UTC 19:30 / 手动 | 同步上游 → 打补丁 → 编译 → 发到固定 tag `v7a-latest`。上游没新提交则自动跳过 |
+| [`sync-build.yml`](.github/workflows/sync-build.yml) | 每天 UTC 19:30 / 手动 | 同步上游 → 打补丁 → 编译 → 发到固定 tag `Release`。上游没新提交则自动跳过 |
 
 构建产物会校验：APK 里**有且仅有** `lib/armeabi-v7a/`，且 `libsimple.so` / `libmupdf_java.so` 确实在包里。
 

@@ -58,7 +58,7 @@ jobs:
           echo "sha=$SHA"          >> "$GITHUB_OUTPUT"
           echo "short=${SHA:0:7}"  >> "$GITHUB_OUTPUT"
 
-          LAST=$(gh release view v7a-latest --repo "${{ github.repository }}" --json body \
+          LAST=$(gh release view Release --repo "${{ github.repository }}" --json body \
                  --jq .body 2>/dev/null | grep -oE 'upstream-sha: [0-9a-f]{40}' | cut -d' ' -f2 || true)
 
           echo "上游 HEAD : $SHA"
@@ -211,21 +211,21 @@ jobs:
 
       - name: 清掉上一版 APK
         if: steps.sign.outputs.variant != 'release-smoke'
-        # v7a-latest 是个固定 tag, 不清理的话产物会越堆越多, 用户分不清哪个是最新的。
+        # Release 是个固定 tag, 不清理的话产物会越堆越多, 用户分不清哪个是最新的。
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view v7a-latest --repo "${{ github.repository }}" --json assets             --jq '.assets[].name' 2>/dev/null | while read -r a; do
+          gh release view Release --repo "${{ github.repository }}" --json assets             --jq '.assets[].name' 2>/dev/null | while read -r a; do
               [ -z "$a" ] && continue
               echo "删除旧产物: $a"
-              gh release delete-asset v7a-latest "$a" --repo "${{ github.repository }}" --yes || true
+              gh release delete-asset Release "$a" --repo "${{ github.repository }}" --yes || true
             done
 
       - name: 发布
         if: steps.sign.outputs.variant != 'release-smoke'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v7a-latest
+          tag_name: Release
           name: RikkaHub armeabi-v7a (latest)
           prerelease: true
           body: |
