@@ -41,6 +41,32 @@ open(path, "w", encoding="utf-8").write(s)
 print("    app/build.gradle.kts: ABI 已改为", lst)
 PY
 
+# ------------------------------------------------- 1b. 关掉 Crashlytics 上传
+# release 开了 R8, Crashlytics 插件会把 mapping 文件传到 Firebase。
+# fork 里的 google-services.json 是占位的, 这个上传必然失败并中断构建。
+# 只关掉上传动作, 不动 SDK 本身 —— 反正没有真实凭据也上报不了任何东西。
+python3 - "$SRC/app/build.gradle.kts" <<'PYCRASH'
+import sys
+path = sys.argv[1]
+s = open(path, encoding="utf-8").read()
+
+if "mappingFileUploadEnabled" in s:
+    print("    Crashlytics 上传已被上游关闭, 跳过")
+    sys.exit(0)
+
+anchor = 'signingConfig = signingConfigs.getByName("release")'
+if s.count(anchor) != 1:
+    sys.exit(f"锚点 signingConfig 命中 {s.count(anchor)} 次(期望 1), 需人工更新 patch-v7a.sh")
+
+# 用全限定类名, 免得再去动文件顶部的 import
+inject = anchor + """
+            configure<com.google.firebase.crashlytics.buildtools.gradle.CrashlyticsExtension> {
+                mappingFileUploadEnabled = false
+            }"""
+open(path, "w", encoding="utf-8").write(s.replace(anchor, inject))
+print("    已关闭 Crashlytics mapping 上传")
+PYCRASH
+
 # ------------------------------------------------------- 2. 放入 v7a 原生库
 # 上游把这些 .so 直接 commit 在仓库里, 但只有 arm64-v8a / x86_64 两份。
 declare -A DEST=(

@@ -13,6 +13,10 @@ on:
         description: '上游没有新提交也强制构建'
         type: boolean
         default: false
+      smoke_release:
+        description: '用一次性密钥试跑 release 构建(只验证能否编过, 不发布)'
+        type: boolean
+        default: false
       build_type:
         description: '构建类型'
         type: choice
@@ -138,7 +142,18 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           WANT='${{ inputs.build_type }}'; WANT="${WANT:-release}"
-          if [ -n "$KEYSTORE_BASE64" ] && [ "$WANT" = "release" ]; then
+          if [ "${{ inputs.smoke_release }}" = "true" ]; then
+            # 一次性密钥, 只为验证 release 链路能跑通, 产物不发布
+            keytool -genkeypair -keystore "$PWD/src/app/release.jks" -alias smoke -keyalg RSA -keysize 2048 -validity 1 -storepass smoketest -keypass smoketest -dname "CN=smoke" -noprompt
+            cat > src/local.properties <<EOP
+          storeFile=$PWD/src/app/release.jks
+          storePassword=smoketest
+          keyAlias=smoke
+          keyPassword=smoketest
+          EOP
+            echo "variant=release-smoke" >> "$GITHUB_OUTPUT"
+            echo "task=assembleRelease" >> "$GITHUB_OUTPUT"
+          elif [ -n "$KEYSTORE_BASE64" ] && [ "$WANT" = "release" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$PWD/src/app/release.jks"
             cat > src/local.properties <<EOP
           storeFile=$PWD/src/app/release.jks
@@ -194,6 +209,7 @@ jobs:
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
       - name: 清掉上一版 APK
+        if: steps.sign.outputs.variant != 'release-smoke'
         # v7a-latest 是个固定 tag, 不清理的话产物会越堆越多, 用户分不清哪个是最新的。
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -205,6 +221,7 @@ jobs:
             done
 
       - name: 发布
+        if: steps.sign.outputs.variant != 'release-smoke'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v7a-latest
