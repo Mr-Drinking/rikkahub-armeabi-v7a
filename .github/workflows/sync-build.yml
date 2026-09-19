@@ -227,7 +227,8 @@ jobs:
         with:
           tag_name: Release
           name: RikkaHub armeabi-v7a (latest)
-          prerelease: true
+          prerelease: false
+          make_latest: true
           body: |
             上游 [`${{ needs.check.outputs.short }}`](https://github.com/rikkahub/rikkahub/commit/${{ needs.check.outputs.sha }}) 的 **armeabi-v7a** 自动构建 · ${{ steps.sign.outputs.variant }}
 
