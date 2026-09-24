@@ -10,9 +10,7 @@ on:
       mupdf_version:
         description: 'MuPDF fitz AAR 版本 (JNI 符号集需与上游 vendored 版一致)'
         default: '1.26.12'
-      proot_version:
-        description: 'Termux proot 包版本'
-        default: '5.1.107.92'
+      # proot 不设版本输入: Termux 仓库只保留最新版, 指定旧版本也下载不到
       simple_ref:
         description: 'wangfenjin/simple 的 git ref'
         default: 'master'
@@ -107,25 +105,42 @@ jobs:
   # ---------------------------------------------------------------------------
   proot:
     runs-on: ubuntu-latest
+    outputs:
+      proot: ${{ steps.dl.outputs.proot }}
+      talloc: ${{ steps.dl.outputs.libtalloc }}
+      shmem: ${{ steps.dl.outputs.libandroid_shmem }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Download termux arm packages
+        id: dl
+        # Termux 的 apt pool 每个包只保留最新版, 旧版 .deb 会直接 404 (proot 几天就发一版)。
+        # 所以不写死文件名, 而是从 Packages 索引里查出当前的 Filename 和 SHA256。
         run: |
-          BASE=https://packages.termux.dev/apt/termux-main/pool/main
-          curl -fsSL -o proot.deb  "$BASE/p/proot/proot_${{ inputs.proot_version }}_arm.deb"
-          curl -fsSL -o talloc.deb "$BASE/libt/libtalloc/libtalloc_2.4.3_arm.deb"
-          curl -fsSL -o shmem.deb  "$BASE/liba/libandroid-shmem/libandroid-shmem_0.7_arm.deb"
-          for d in proot talloc shmem; do mkdir -p x_$d && dpkg-deb -x $d.deb x_$d; done
+          REPO=https://packages.termux.dev/apt/termux-main
+          curl -fsSL -o Packages "$REPO/dists/stable/main/binary-arm/Packages"
+          # field <包名> <字段>: 取索引里某个包的某个字段
+          field() { awk -v p="$1" -v f="$2:" '$1=="Package:"{cur=$2} cur==p && $1==f{print $2; exit}' Packages; }
+
+          for pkg in proot libtalloc libandroid-shmem; do
+            file=$(field "$pkg" Filename); sum=$(field "$pkg" SHA256); ver=$(field "$pkg" Version)
+            [ -n "$file" ] && [ -n "$sum" ] || { echo "::error::Termux 索引里找不到 $pkg"; exit 1; }
+            echo "$pkg $ver <- $file"
+            curl -fsSL -o "$pkg.deb" "$REPO/$file"
+            echo "$sum  $pkg.deb" | sha256sum -c -
+            mkdir -p "x_$pkg" && dpkg-deb -x "$pkg.deb" "x_$pkg"
+            echo "${pkg//-/_}=$ver" >> "$GITHUB_OUTPUT"
+          done
 
       - name: Assemble and repoint dependencies
         run: |
           mkdir -p out
           P=data/data/com.termux/files/usr
-          cp "x_proot/$P/bin/proot"                  out/libproot_exec.so
-          cp "x_proot/$P/libexec/proot/loader"       out/libproot_loader.so
-          cp "x_talloc/$P/lib/libtalloc.so.2.4.3"    out/libtalloc.so
-          cp "x_shmem/$P/lib/libandroid-shmem.so"    out/libandroid-shmem.so
+          cp    "x_proot/$P/bin/proot"                         out/libproot_exec.so
+          cp    "x_proot/$P/libexec/proot/loader"              out/libproot_loader.so
+          # 经 SONAME 链接取实体文件, 不写死 talloc 的小版本号
+          cp -L "x_libtalloc/$P/lib/libtalloc.so.2"            out/libtalloc.so
+          cp    "x_libandroid-shmem/$P/lib/libandroid-shmem.so" out/libandroid-shmem.so
           chmod +w out/*.so
 
           python3 scripts/rename-elf-dep.py out/libtalloc.so     libtalloc.so.2 libtalloc.so
@@ -134,10 +149,15 @@ jobs:
       - name: Verify dependency closure
         run: |
           for f in out/*.so; do echo "--- $f"; readelf -h "$f" | grep -E 'Class|Machine'; readelf -d "$f" 2>/dev/null | grep NEEDED || echo "  (静态)"; done
-          # 依赖里不能再残留带版本后缀的库名(Android 装不进去)
-          if readelf -d out/libproot_exec.so | grep NEEDED | grep -q 'so\.[0-9]'; then
-            echo "::error::仍有带版本后缀的依赖"; exit 1
-          fi
+          # 每个依赖在设备上都必须找得到: 要么是 bionic 系统库, 要么是一起打包的库。
+          # 带版本后缀的库名(libtalloc.so.2)也会在这里被拦下 —— Android 装不进去。
+          # proot 总是取 Termux 最新版, 这一步防止它哪天悄悄多出一个新依赖。
+          OK=" libc.so libdl.so libm.so liblog.so $(cd out && echo *.so) "
+          for f in out/*.so; do
+            for dep in $(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+              [[ "$OK" == *" $dep "* ]] || { echo "::error::$f 依赖 $dep, 设备上找不到"; exit 1; }
+            done
+          done
           # 就地改写必须保持文件大小不变, 变了说明动了结构
           P=data/data/com.termux/files/usr
           if [ "$(stat -c%s out/libproot_exec.so)" != "$(stat -c%s x_proot/$P/bin/proot)" ]; then
@@ -177,8 +197,8 @@ jobs:
             |---|---|
             | `libsimple.so` | 由 [wangfenjin/simple](https://github.com/wangfenjin/simple) `${{ inputs.simple_ref }}` 用 NDK 编译 |
             | `libmupdf_java.so` | 取自 MuPDF 官方 AAR `fitz-${{ inputs.mupdf_version }}` |
-            | `libproot_exec.so` / `libproot_loader.so` | Termux `proot ${{ inputs.proot_version }}` (arm) |
-            | `libtalloc.so` / `libandroid-shmem.so` | Termux 依赖库，已用 patchelf 重命名以适配 Android |
+            | `libproot_exec.so` / `libproot_loader.so` | Termux `proot ${{ needs.proot.outputs.proot }}` (arm) |
+            | `libtalloc.so` / `libandroid-shmem.so` | Termux `libtalloc ${{ needs.proot.outputs.talloc }}` / `libandroid-shmem ${{ needs.proot.outputs.shmem }}` (arm)，已就地改写 SONAME / DT_NEEDED 以适配 Android |
           files: |
             natives-v7a.tar.gz
             SHA256SUMS
