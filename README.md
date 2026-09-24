@@ -3,7 +3,8 @@
 给 [RikkaHub](https://github.com/rikkahub/rikkahub) 补一个 **32 位 ARM (armeabi-v7a)** 版本——
 上游官方只发布 `arm64-v8a` 和 `x86_64`。
 
-上游每次更新，这里自动同步、打补丁、编译、发版。**不修改任何功能代码**，只动 ABI 配置。
+上游每次更新，这里自动同步、打补丁、编译、发版。**不修改任何功能代码**，只动构建配置：ABI、签名，
+以及用占位的 Firebase 配置顶替官方那份（上游是用 secret 注入的）——所以这个版本的崩溃统计和遥测不会真正上报。
 
 > ⚠️ 非官方构建。签名与官方版不同，**无法覆盖安装**——要装得先卸载官方版（记得先导出数据）。
 
@@ -30,7 +31,7 @@
 |---|---|---|
 | `libmupdf_java.so` | MuPDF 官方 AAR `com.artifex.mupdf:fitz` | 官方 AAR 本来就带 v7a，直接抽出来即可。版本经 JNI 符号集比对确认与上游 vendored 版一致（661 个符号完全吻合） |
 | `libsimple.so` | 用 NDK 编译 [wangfenjin/simple](https://github.com/wangfenjin/simple) | 上游官方 release 也只发 arm64/x86_64，只能自己编。构建参数照抄该项目 CI 里的 Android job，只把 ABI 换成 v7a |
-| `libproot_exec.so`<br>`libproot_loader.so`<br>`libtalloc.so`<br>`libandroid-shmem.so` | Termux 官方 `arm` 包 | RikkaHub 的 arm64 版是自己重编的（talloc/shmem 静态链接）。这里改用 Termux 现成二进制 + `patchelf` 改依赖名——因为 Android 只解压 `lib*.so` 形式的文件，`libtalloc.so.2` 这种带版本后缀的名字装不进 `nativeLibraryDir` |
+| `libproot_exec.so`<br>`libproot_loader.so`<br>`libtalloc.so`<br>`libandroid-shmem.so` | Termux 官方 `arm` 包 | RikkaHub 的 arm64 版是自己重编的（talloc/shmem 静态链接）。这里改用 Termux 现成二进制，再改掉依赖名——因为 Android 只解压 `lib*.so` 形式的文件，`libtalloc.so.2` 这种带版本后缀的名字装不进 `nativeLibraryDir`。改名是直接覆写 `.dynstr` 里的字符串，不用 `patchelf`（它会重排 ELF 结构，bionic 链接器对此很挑剔）。Termux 仓库只保留最新版，所以总是取当前版本 |
 
 ## 仓库结构：为什么不维护分叉分支
 
@@ -52,7 +53,7 @@
 
 | Workflow | 触发 | 干什么 |
 |---|---|---|
-| [`build-natives.yml`](.github/workflows/build-natives.yml) | 手动 | 产出 4+2 个 v7a `.so`，发到固定 tag `natives-v7a`。**跑一次就够**，只有上游换了原生库版本才需要重跑 |
+| [`build-natives.yml`](.github/workflows/build-natives.yml) | 手动 | 产出 4+2 个 v7a `.so`，发到固定 tag `natives-v7a`。**跑一次就够**，只有上游换了原生库版本才需要重跑。会校验每个 `.so` 的依赖在设备上都找得到 |
 | [`sync-build.yml`](.github/workflows/sync-build.yml) | 每天 UTC 19:30 / 手动 | 同步上游 → 打补丁 → 编译 → 发到固定 tag `Release`。上游没新提交则自动跳过 |
 
 构建产物会校验：APK 里**有且仅有** `lib/armeabi-v7a/`，且 `libsimple.so` / `libmupdf_java.so` 确实在包里。
