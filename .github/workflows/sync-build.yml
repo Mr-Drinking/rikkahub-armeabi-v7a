@@ -79,12 +79,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 取构建配方(本分支)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: tooling
 
       - name: 取上游源码(纯净, 不做任何 commit)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: rikkahub/rikkahub
           ref: ${{ needs.check.outputs.sha }}
@@ -105,16 +105,16 @@ jobs:
       - name: 打 v7a 补丁
         run: tooling/scripts/patch-v7a.sh src natives armeabi-v7a
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -125,7 +125,7 @@ jobs:
         working-directory: src/web-ui
         run: pnpm install --frozen-lockfile
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.gradle/caches
@@ -223,7 +223,7 @@ jobs:
 
       - name: 发布
         if: steps.sign.outputs.variant != 'release-smoke'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: Release
           name: RikkaHub armeabi-v7a (latest)
