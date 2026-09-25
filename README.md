@@ -1,7 +1,7 @@
 # RikkaHub · armeabi-v7a 自动构建
 
 给 [RikkaHub](https://github.com/rikkahub/rikkahub) 补一个 **32 位 ARM (armeabi-v7a)** 版本——
-上游官方只发布 `arm64-v8a` 和 `x86_64`。
+上游官方只提供 64 位版本（正式 release 只发 `arm64-v8a`）。
 
 上游每次更新，这里自动同步、打补丁、编译、发版。**不修改任何功能代码**，只动构建配置：ABI、签名，
 以及用占位的 Firebase 配置顶替官方那份（上游是用 secret 注入的）——所以这个版本的崩溃统计和遥测不会真正上报。
