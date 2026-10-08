@@ -105,10 +105,14 @@ jobs:
       - name: 打 v7a 补丁
         run: tooling/scripts/patch-v7a.sh src natives armeabi-v7a
 
+      # 跟上游 daily-build 用同一个 JDK(与 Android Studio 自带的 JetBrains Runtime 21 一致),
+      # 免得哪天上游用到 21 才有的东西, 这里才发现编不过。
       - uses: actions/setup-java@v6
         with:
-          distribution: temurin
-          java-version: '17'
+          distribution: jetbrains
+          java-version: '21'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # jetbrains 安装器要查 GitHub API, 带上 token 免得被限流
 
       - uses: pnpm/action-setup@v6
         with:
